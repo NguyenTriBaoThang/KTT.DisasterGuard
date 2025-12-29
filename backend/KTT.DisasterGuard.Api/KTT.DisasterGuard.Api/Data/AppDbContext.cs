@@ -12,11 +12,17 @@ public class AppDbContext : DbContext
     public DbSet<SosRequest> SosRequests => Set<SosRequest>();
     public DbSet<Location> Locations => Set<Location>();
     public DbSet<DisasterEvent> DisasterEvents => Set<DisasterEvent>();
+    public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<User>()
             .HasIndex(x => x.Email)
             .IsUnique();
+
+        modelBuilder.Entity<SosRequest>().HasIndex(x => x.Status);
+        modelBuilder.Entity<SosRequest>().HasIndex(x => x.RescuerId);
+
+        modelBuilder.Entity<Location>().HasIndex(x => x.UserId).IsUnique();
     }
 }

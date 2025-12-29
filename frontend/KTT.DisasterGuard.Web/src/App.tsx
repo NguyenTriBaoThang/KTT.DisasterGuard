@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import HomePage from "./pages/HomePage";
 import AuthPage from "./pages/AuthPage";
 import DashboardPage from "./pages/DashboardPage";
+import UserSosPage from "./pages/UserSosPage";
+import ChatbotPage from "./pages/ChatbotPage";
 import { getToken } from "./auth/auth";
 import { setAuthToken } from "./api/api";
-import UserSosPage from "./pages/UserSosPage";
+import RequireRole from "./auth/RequireRole";
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const token = getToken();
@@ -28,18 +30,21 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<HomePage />} />
+
         <Route
           path="/auth"
-          element={<AuthPage onAuthed={() => window.location.assign("/dashboard")} />}
+          element={<AuthPage onAuthed={() => (window.location.href = "/dashboard")} />}
         />
+
         <Route
           path="/dashboard"
           element={
-            <RequireAuth>
+            <RequireRole roles={["ADMIN", "RESCUE"]}>
               <DashboardPage />
-            </RequireAuth>
+            </RequireRole>
           }
         />
+
         <Route
           path="/sos"
           element={
@@ -48,6 +53,17 @@ export default function App() {
             </RequireAuth>
           }
         />
+
+        {/* ✅ Chatbot */}
+        <Route
+          path="/chat"
+          element={
+            <RequireAuth>
+              <ChatbotPage />
+            </RequireAuth>
+          }
+        />
+
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

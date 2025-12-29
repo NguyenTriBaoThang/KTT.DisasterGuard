@@ -1,6 +1,6 @@
-﻿using System.Security.Claims;
-using KTT.DisasterGuard.Api.Data;
+﻿using KTT.DisasterGuard.Api.Data;
 using KTT.DisasterGuard.Api.Dtos;
+using KTT.DisasterGuard.Api.Extensions;
 using KTT.DisasterGuard.Api.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -20,23 +20,18 @@ public class LocationController : ControllerBase
         _db = db;
     }
 
-    // USER update GPS (có thể gọi mỗi 15–30 phút)
     [HttpPost("update")]
     public async Task<IActionResult> UpdateLocation(UpdateLocationRequest req)
     {
-        var userId = Guid.Parse(
-            User.FindFirstValue(ClaimTypes.NameIdentifier)!
-        );
+        if (!User.TryGetUserId(out var userId))
+            return Unauthorized("Missing/invalid user id claim.");
 
         var location = await _db.Locations
             .FirstOrDefaultAsync(x => x.UserId == userId);
 
         if (location == null)
         {
-            location = new Location
-            {
-                UserId = userId
-            };
+            location = new Location { UserId = userId };
             _db.Locations.Add(location);
         }
 
@@ -56,13 +51,11 @@ public class LocationController : ControllerBase
         });
     }
 
-    // USER xem vị trí hiện tại của mình
     [HttpGet("me")]
     public async Task<IActionResult> GetMyLocation()
     {
-        var userId = Guid.Parse(
-            User.FindFirstValue(ClaimTypes.NameIdentifier)!
-        );
+        if (!User.TryGetUserId(out var userId))
+            return Unauthorized("Missing/invalid user id claim.");
 
         var location = await _db.Locations
             .FirstOrDefaultAsync(x => x.UserId == userId);
@@ -79,7 +72,6 @@ public class LocationController : ControllerBase
         });
     }
 
-    // RESCUE / ADMIN xem tất cả vị trí gần nhất
     [HttpGet("active")]
     [Authorize(Roles = "ADMIN,RESCUE")]
     public async Task<IActionResult> GetActiveLocations()

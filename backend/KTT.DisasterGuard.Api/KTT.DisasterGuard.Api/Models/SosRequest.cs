@@ -9,11 +9,21 @@ public class SosRequest
 
     public Guid UserId { get; set; }
 
+    // ✅ RESCUE/ADMIN nhận ca
+    public Guid? RescuerId { get; set; }
+
     public double Latitude { get; set; }
     public double Longitude { get; set; }
 
-    // PENDING | RESCUED | CANCELLED
+    // PENDING | ACCEPTED | RESCUED | CANCELLED
+    [MaxLength(20)]
     public string Status { get; set; } = "PENDING";
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    // ✅ tracking
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? AcceptedAt { get; set; }
+    public DateTime? RescuedAt { get; set; }
+    public DateTime? CancelledAt { get; set; }
 }

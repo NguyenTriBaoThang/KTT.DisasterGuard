@@ -28,10 +28,19 @@ public class JwtTokenService : IJwtTokenService
 
         var expires = DateTime.UtcNow.AddHours(6);
 
-        var claims = new[]
+        var userId = user.Id.ToString();
+
+        var claims = new List<Claim>
         {
-            new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+            // ✅ ID: để controller lấy ổn định
+            new Claim(JwtRegisteredClaimNames.Sub, userId),
+            new Claim(ClaimTypes.NameIdentifier, userId),
+
+            // ✅ Email
             new Claim(JwtRegisteredClaimNames.Email, user.Email),
+            new Claim(ClaimTypes.Email, user.Email),
+
+            // ✅ Role
             new Claim(ClaimTypes.Role, user.Role)
         };
 
@@ -39,9 +48,9 @@ public class JwtTokenService : IJwtTokenService
         var credentials = new SigningCredentials(securityKey, SecurityAlgorithms.HmacSha256);
 
         var token = new JwtSecurityToken(
-            issuer,
-            audience,
-            claims,
+            issuer: issuer,
+            audience: audience,
+            claims: claims,
             expires: expires,
             signingCredentials: credentials
         );

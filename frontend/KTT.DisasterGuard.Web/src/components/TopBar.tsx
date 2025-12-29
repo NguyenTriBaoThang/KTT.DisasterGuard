@@ -1,11 +1,14 @@
 import { useNavigate } from "react-router-dom";
-import { clearToken } from "../auth/auth";
+import { clearToken, getRoleFromToken } from "../auth/auth";
+import { clearAuthToken } from "../api/api";
 
 export default function TopBar() {
   const navigate = useNavigate();
+  const role = (getRoleFromToken() || "GUEST").toUpperCase();
 
   function logout() {
     clearToken();
+    clearAuthToken();
     navigate("/auth");
   }
 
@@ -13,9 +16,13 @@ export default function TopBar() {
     <div style={styles.bar}>
       <div style={styles.left}>
         <b>KTT DisasterGuard</b>
+        <span style={styles.role}>Role: {role}</span>
       </div>
 
       <div style={styles.right}>
+        <button style={styles.btn} onClick={() => navigate("/chat")}>
+          🤖 Chatbot
+        </button>
         <button style={styles.btn} onClick={() => navigate("/")}>
           ⬅ Trang chủ
         </button>
@@ -44,7 +51,15 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 2000,
     borderBottom: "1px solid rgba(255,255,255,0.12)",
   },
-  left: { fontSize: 16 },
+  left: { fontSize: 16, display: "flex", gap: 10, alignItems: "center" },
+  role: {
+    fontSize: 12,
+    opacity: 0.85,
+    padding: "3px 8px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.18)",
+    background: "rgba(255,255,255,0.08)",
+  },
   right: { display: "flex", gap: 8 },
   btn: {
     padding: "6px 10px",
