@@ -1,12 +1,13 @@
 import { MapContainer, TileLayer, Marker, Popup, Circle, GeoJSON, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/api";
 import MapLegend from "./MapLegend";
 import DisasterTestPanel from "./DisasterTestPanel";
 import { getRoleFromToken, getUserIdFromToken } from "../auth/auth";
 import SosPanel from "./SosPanel";
+import { startRealtime, getRealtimeConnection, stopRealtime } from "../realtime/realtime";
 
 const userIcon = new L.Icon({
   iconUrl: "https://cdn-icons-png.flaticon.com/512/149/149071.png",
@@ -19,6 +20,7 @@ const sosIcon = new L.Icon({
 });
 
 type Location = {
+  userId?: string;
   latitude: number;
   longitude: number;
   updatedAt: string;
@@ -83,10 +85,7 @@ export default function MapDashboard() {
   const [needRescueRole, setNeedRescueRole] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  // Filter SOS: ACTIVE / PENDING / ACCEPTED / RESCUED / CANCELLED
   const [sosFilter, setSosFilter] = useState<string>("ACTIVE");
-
-  // Zoom chọn SOS
   const [selectedPos, setSelectedPos] = useState<[number, number] | null>(null);
 
   const role = (getRoleFromToken() || "").toUpperCase();
@@ -95,16 +94,98 @@ export default function MapDashboard() {
   const isRescueOrAdmin = role === "RESCUE" || role === "ADMIN";
   const isAdmin = role === "ADMIN";
 
+  const reloadTimer = useRef<any>(null);
+
   useEffect(() => {
     loadData();
 
-    const timer = setInterval(loadData, 15000);
+    const timer = setInterval(loadData, 15000); // fallback
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sosFilter]);
 
+  // ✅ SignalR realtime subscribe
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      await startRealtime();
+      if (!mounted) return;
+
+      const conn = getRealtimeConnection();
+
+      const scheduleReload = () => {
+        if (reloadTimer.current) return;
+        reloadTimer.current = setTimeout(() => {
+          reloadTimer.current = null;
+          loadData();
+        }, 400);
+      };
+
+      // ✅ Locations: upsert để mượt
+      conn.on("locationUpdated", (p: any) => {
+        // p: { userId, latitude, longitude, accuracy, updatedAt }
+        const u = String(p?.userId || "");
+        if (!u) return;
+
+        setLocations((prev) => {
+          const idx = prev.findIndex((x) => String(x.userId || "").toLowerCase() === u.toLowerCase());
+          const next: Location = {
+            userId: u,
+            latitude: p.latitude,
+            longitude: p.longitude,
+            updatedAt: p.updatedAt,
+          };
+
+          if (idx >= 0) {
+            const copy = [...prev];
+            copy[idx] = { ...copy[idx], ...next };
+            return copy;
+          }
+          return [next, ...prev];
+        });
+      });
+
+      // ✅ SOS: do filter nhiều trạng thái -> debounced reload cho chắc 100%
+      conn.on("sosUpdated", () => {
+        scheduleReload();
+      });
+
+      // ✅ Disaster: update map
+      conn.on("disasterUpdated", (d: Disaster) => {
+        if (!d?.id) return;
+
+        setDisasters((prev) => {
+          if (!d.isActive) return prev.filter((x) => x.id !== d.id);
+
+          const idx = prev.findIndex((x) => x.id === d.id);
+          if (idx >= 0) {
+            const copy = [...prev];
+            copy[idx] = { ...copy[idx], ...d };
+            return copy;
+          }
+          return [d, ...prev];
+        });
+      });
+
+      conn.onreconnected(() => scheduleReload());
+      conn.onclose(() => scheduleReload());
+    })();
+
+    return () => {
+      mounted = false;
+      const conn = getRealtimeConnection();
+      conn.off("locationUpdated");
+      conn.off("sosUpdated");
+      conn.off("disasterUpdated");
+      stopRealtime().catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sosFilter]);
+
   async function loadData() {
-    const sosUrl = sosFilter === "ACTIVE" ? "/api/sos" : `/api/sos?status=${encodeURIComponent(sosFilter)}`;
+    const sosUrl =
+      sosFilter === "ACTIVE" ? "/api/sos" : `/api/sos?status=${encodeURIComponent(sosFilter)}`;
 
     const results = await Promise.allSettled([
       api.get("/api/location/active"),
@@ -142,6 +223,7 @@ export default function MapDashboard() {
     setBusyId(id);
     try {
       await api.post(`/api/sos/${id}/accept`);
+      // realtime sẽ tự cập nhật, nhưng gọi reload nhẹ cho chắc
       await loadData();
       alert("✅ Đã nhận SOS");
     } catch (e: any) {
@@ -187,7 +269,10 @@ export default function MapDashboard() {
   return (
     <>
       <MapContainer center={[10.8231, 106.6297]} zoom={12} style={{ height: "100vh", width: "100%" }}>
-        <TileLayer attribution="&copy; OpenStreetMap contributors" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        <TileLayer
+          attribution="&copy; OpenStreetMap contributors"
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
 
         {/* FlyTo khi chọn SOS */}
         <FlyTo position={selectedPos} />
@@ -212,12 +297,16 @@ export default function MapDashboard() {
 
         {/* DISASTER ZONES (Polygon GeoJSON) */}
         {geoJsonLayers.map(({ d, geo }) => (
-          <GeoJSON key={`${d.id}-geo`} data={geo} style={{ color: severityColor(d.severity), weight: 2, fillOpacity: 0.1 }} />
+          <GeoJSON
+            key={`${d.id}-geo`}
+            data={geo}
+            style={{ color: severityColor(d.severity), weight: 2, fillOpacity: 0.1 }}
+          />
         ))}
 
         {/* USER LOCATIONS */}
         {locations.map((l, i) => (
-          <Marker key={`loc-${i}`} position={[l.latitude, l.longitude]} icon={userIcon} zIndexOffset={1000}>
+          <Marker key={`loc-${l.userId ?? i}`} position={[l.latitude, l.longitude]} icon={userIcon} zIndexOffset={1000}>
             <Popup>
               📍 <b>Người dùng</b><br />
               Cập nhật: {new Date(l.updatedAt).toLocaleString()}

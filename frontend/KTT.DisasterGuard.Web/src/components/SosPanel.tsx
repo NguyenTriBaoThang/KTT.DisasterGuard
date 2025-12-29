@@ -48,6 +48,7 @@ export default function SosPanel({
   onUpdateStatus: (id: string, status: "RESCUED" | "CANCELLED") => void;
 }) {
   const isRescueOrAdmin = role === "RESCUE" || role === "ADMIN";
+  const my = (myUserId || "").toLowerCase();
 
   return (
     <div style={styles.box}>
@@ -88,7 +89,7 @@ export default function SosPanel({
         {sosList.map((s) => {
           const st = (s.status || "").toUpperCase();
           const rescuerId = (s.rescuerId || "").toLowerCase();
-          const assignedToMe = !!myUserId && !!rescuerId && rescuerId === myUserId;
+          const assignedToMe = !!my && !!rescuerId && rescuerId === my;
 
           return (
             <div key={s.id} style={styles.item}>

@@ -1,9 +1,11 @@
 ﻿using KTT.DisasterGuard.Api.Data;
 using KTT.DisasterGuard.Api.Dtos;
 using KTT.DisasterGuard.Api.Extensions;
+using KTT.DisasterGuard.Api.Hubs;
 using KTT.DisasterGuard.Api.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 namespace KTT.DisasterGuard.Api.Controllers;
@@ -14,10 +16,12 @@ namespace KTT.DisasterGuard.Api.Controllers;
 public class LocationController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly IHubContext<RealtimeHub> _hub;
 
-    public LocationController(AppDbContext db)
+    public LocationController(AppDbContext db, IHubContext<RealtimeHub> hub)
     {
         _db = db;
+        _hub = hub;
     }
 
     [HttpPost("update")]
@@ -26,8 +30,7 @@ public class LocationController : ControllerBase
         if (!User.TryGetUserId(out var userId))
             return Unauthorized("Missing/invalid user id claim.");
 
-        var location = await _db.Locations
-            .FirstOrDefaultAsync(x => x.UserId == userId);
+        var location = await _db.Locations.FirstOrDefaultAsync(x => x.UserId == userId);
 
         if (location == null)
         {
@@ -41,6 +44,18 @@ public class LocationController : ControllerBase
         location.UpdatedAt = DateTime.UtcNow;
 
         await _db.SaveChangesAsync();
+
+        var payload = new
+        {
+            userId = location.UserId,
+            latitude = location.Latitude,
+            longitude = location.Longitude,
+            accuracy = location.Accuracy,
+            updatedAt = location.UpdatedAt
+        };
+
+        // ✅ Realtime: báo cho RESCUE/ADMIN
+        await _hub.Clients.Group("rescue").SendAsync("locationUpdated", payload);
 
         return Ok(new LocationResponse
         {
@@ -57,11 +72,8 @@ public class LocationController : ControllerBase
         if (!User.TryGetUserId(out var userId))
             return Unauthorized("Missing/invalid user id claim.");
 
-        var location = await _db.Locations
-            .FirstOrDefaultAsync(x => x.UserId == userId);
-
-        if (location == null)
-            return NotFound("Location not found");
+        var location = await _db.Locations.FirstOrDefaultAsync(x => x.UserId == userId);
+        if (location == null) return NotFound("Location not found");
 
         return Ok(new LocationResponse
         {
@@ -76,10 +88,7 @@ public class LocationController : ControllerBase
     [Authorize(Roles = "ADMIN,RESCUE")]
     public async Task<IActionResult> GetActiveLocations()
     {
-        var list = await _db.Locations
-            .OrderByDescending(x => x.UpdatedAt)
-            .ToListAsync();
-
+        var list = await _db.Locations.OrderByDescending(x => x.UpdatedAt).ToListAsync();
         return Ok(list);
     }
 }

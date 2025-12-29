@@ -1,8 +1,10 @@
 ﻿using KTT.DisasterGuard.Api.Data;
 using KTT.DisasterGuard.Api.Dtos;
+using KTT.DisasterGuard.Api.Hubs;
 using KTT.DisasterGuard.Api.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 namespace KTT.DisasterGuard.Api.Controllers;
@@ -12,13 +14,14 @@ namespace KTT.DisasterGuard.Api.Controllers;
 public class DisasterController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly IHubContext<RealtimeHub> _hub;
 
-    public DisasterController(AppDbContext db)
+    public DisasterController(AppDbContext db, IHubContext<RealtimeHub> hub)
     {
         _db = db;
+        _hub = hub;
     }
 
-    // Mock AI tạo 1 sự kiện thiên tai (Admin/Rescue)
     [HttpPost("mock")]
     [Authorize(Roles = "ADMIN,RESCUE")]
     public async Task<IActionResult> CreateMock(CreateDisasterMockRequest req)
@@ -37,10 +40,14 @@ public class DisasterController : ControllerBase
         _db.DisasterEvents.Add(ev);
         await _db.SaveChangesAsync();
 
-        return Ok(ToResponse(ev));
+        var payload = ToResponse(ev);
+
+        // ✅ Realtime: báo cho tất cả (ai xem map cũng thấy)
+        await _hub.Clients.Group("all").SendAsync("disasterUpdated", payload);
+
+        return Ok(payload);
     }
 
-    // Lấy danh sách sự kiện đang active (public hoặc authorize tùy bạn)
     [HttpGet("active")]
     public async Task<IActionResult> GetActive()
     {
@@ -52,7 +59,6 @@ public class DisasterController : ControllerBase
         return Ok(list.Select(ToResponse));
     }
 
-    // Tắt sự kiện (Admin/Rescue)
     [HttpPost("{id:guid}/deactivate")]
     [Authorize(Roles = "ADMIN,RESCUE")]
     public async Task<IActionResult> Deactivate(Guid id)
@@ -62,7 +68,11 @@ public class DisasterController : ControllerBase
 
         ev.IsActive = false;
         await _db.SaveChangesAsync();
-        return Ok(ToResponse(ev));
+
+        var payload = ToResponse(ev);
+        await _hub.Clients.Group("all").SendAsync("disasterUpdated", payload);
+
+        return Ok(payload);
     }
 
     private static DisasterResponse ToResponse(DisasterEvent ev) => new DisasterResponse

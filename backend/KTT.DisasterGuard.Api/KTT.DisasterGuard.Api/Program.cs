@@ -1,6 +1,7 @@
 ﻿using System.Security.Claims;
 using System.Text;
 using KTT.DisasterGuard.Api.Data;
+using KTT.DisasterGuard.Api.Hubs;
 using KTT.DisasterGuard.Api.Models;
 using KTT.DisasterGuard.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -13,7 +14,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
-// Swagger + Bearer
+// ✅ SignalR
+builder.Services.AddSignalR();
+
+// ✅ Swagger + Bearer
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "DisasterGuard API", Version = "v1" });
@@ -44,7 +48,7 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-// CORS
+// ✅ CORS (SignalR cần AllowCredentials khi dùng negotiate/WebSocket cross-origin)
 const string CorsPolicy = "AllowVite";
 builder.Services.AddCors(options =>
 {
@@ -58,17 +62,18 @@ builder.Services.AddCors(options =>
                 "https://127.0.0.1:5173"
             )
             .AllowAnyHeader()
-            .AllowAnyMethod();
+            .AllowAnyMethod()
+            .AllowCredentials();
     });
 });
 
-// DB
+// ✅ DB
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
     options.UseSqlServer(builder.Configuration.GetConnectionString("Default"));
 });
 
-// JWT service
+// ✅ JWT service
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 
 var jwtKey = builder.Configuration["Jwt:Key"]!;
@@ -93,6 +98,23 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
             NameClaimType = ClaimTypes.NameIdentifier,
             RoleClaimType = ClaimTypes.Role
+        };
+
+        // ✅ Cho SignalR: lấy token từ query ?access_token=... khi connect hub
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                var path = context.HttpContext.Request.Path;
+
+                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs/realtime"))
+                {
+                    context.Token = accessToken;
+                }
+
+                return Task.CompletedTask;
+            }
         };
     });
 
@@ -140,10 +162,16 @@ app.UseSwaggerUI(c =>
 });
 
 app.UseHttpsRedirection();
+
+// ✅ CORS trước auth
 app.UseCors(CorsPolicy);
 
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+// ✅ Map SignalR Hub (Realtime)
+app.MapHub<RealtimeHub>("/hubs/realtime").RequireCors(CorsPolicy);
+
 app.Run();

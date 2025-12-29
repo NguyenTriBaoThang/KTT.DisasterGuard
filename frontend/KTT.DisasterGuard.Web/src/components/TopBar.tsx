@@ -1,15 +1,17 @@
 import { useNavigate } from "react-router-dom";
 import { clearToken, getRoleFromToken } from "../auth/auth";
 import { clearAuthToken } from "../api/api";
+import { stopRealtime } from "../realtime/realtime";
 
 export default function TopBar() {
   const navigate = useNavigate();
   const role = (getRoleFromToken() || "GUEST").toUpperCase();
   const isRescueOrAdmin = role === "RESCUE" || role === "ADMIN";
 
-  function logout() {
+  async function logout() {
     clearToken();
     clearAuthToken();
+    await stopRealtime();
     navigate("/auth");
   }
 
