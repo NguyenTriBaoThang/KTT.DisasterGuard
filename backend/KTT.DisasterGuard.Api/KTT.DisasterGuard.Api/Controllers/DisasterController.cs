@@ -40,12 +40,12 @@ public class DisasterController : ControllerBase
         _db.DisasterEvents.Add(ev);
         await _db.SaveChangesAsync();
 
-        var payload = ToResponse(ev);
+        var dto = ToResponse(ev);
 
-        // ✅ Realtime: báo cho tất cả (ai xem map cũng thấy)
-        await _hub.Clients.Group("all").SendAsync("disasterUpdated", payload);
+        // ✅ broadcast cho mọi client (dashboard)
+        await _hub.Clients.All.SendAsync("disasterChanged", new { action = "CREATED", disaster = dto });
 
-        return Ok(payload);
+        return Ok(dto);
     }
 
     [HttpGet("active")]
@@ -69,10 +69,12 @@ public class DisasterController : ControllerBase
         ev.IsActive = false;
         await _db.SaveChangesAsync();
 
-        var payload = ToResponse(ev);
-        await _hub.Clients.Group("all").SendAsync("disasterUpdated", payload);
+        var dto = ToResponse(ev);
 
-        return Ok(payload);
+        // ✅ broadcast
+        await _hub.Clients.All.SendAsync("disasterChanged", new { action = "DEACTIVATED", disaster = dto });
+
+        return Ok(dto);
     }
 
     private static DisasterResponse ToResponse(DisasterEvent ev) => new DisasterResponse

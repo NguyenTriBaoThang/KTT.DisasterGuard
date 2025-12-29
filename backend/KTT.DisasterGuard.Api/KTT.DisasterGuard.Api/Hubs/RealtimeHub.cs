@@ -1,4 +1,5 @@
 ﻿using System.Security.Claims;
+using KTT.DisasterGuard.Api.Helpers;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 
@@ -9,24 +10,37 @@ public class RealtimeHub : Hub
 {
     public override async Task OnConnectedAsync()
     {
-        var role = (Context.User?.FindFirstValue(ClaimTypes.Role) ?? "").ToUpperInvariant();
+        // group theo user để gửi riêng
+        var userId = Context.User?.GetUserId();
+        if (userId != null && userId != Guid.Empty)
+        {
+            await Groups.AddToGroupAsync(Context.ConnectionId, $"user:{userId}");
+        }
 
-        // Group cho RESCUE/ADMIN
-        if (role == "RESCUE" || role == "ADMIN")
+        // group cứu hộ để broadcast SOS/Location
+        var role = (Context.User?.FindFirstValue(ClaimTypes.Role) ?? "").ToUpperInvariant();
+        if (role == "ADMIN" || role == "RESCUE")
         {
             await Groups.AddToGroupAsync(Context.ConnectionId, "rescue");
         }
-
-        // Group cho tất cả
-        await Groups.AddToGroupAsync(Context.ConnectionId, "all");
 
         await base.OnConnectedAsync();
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        await Groups.RemoveFromGroupAsync(Context.ConnectionId, "rescue");
-        await Groups.RemoveFromGroupAsync(Context.ConnectionId, "all");
+        var userId = Context.User?.GetUserId();
+        if (userId != null && userId != Guid.Empty)
+        {
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, $"user:{userId}");
+        }
+
+        var role = (Context.User?.FindFirstValue(ClaimTypes.Role) ?? "").ToUpperInvariant();
+        if (role == "ADMIN" || role == "RESCUE")
+        {
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, "rescue");
+        }
+
         await base.OnDisconnectedAsync(exception);
     }
 }

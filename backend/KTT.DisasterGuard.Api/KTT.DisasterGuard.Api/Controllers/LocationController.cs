@@ -1,6 +1,6 @@
 ﻿using KTT.DisasterGuard.Api.Data;
 using KTT.DisasterGuard.Api.Dtos;
-using KTT.DisasterGuard.Api.Extensions;
+using KTT.DisasterGuard.Api.Helpers;
 using KTT.DisasterGuard.Api.Hubs;
 using KTT.DisasterGuard.Api.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -27,8 +27,7 @@ public class LocationController : ControllerBase
     [HttpPost("update")]
     public async Task<IActionResult> UpdateLocation(UpdateLocationRequest req)
     {
-        if (!User.TryGetUserId(out var userId))
-            return Unauthorized("Missing/invalid user id claim.");
+        var userId = User.GetUserId();
 
         var location = await _db.Locations.FirstOrDefaultAsync(x => x.UserId == userId);
 
@@ -45,17 +44,17 @@ public class LocationController : ControllerBase
 
         await _db.SaveChangesAsync();
 
-        var payload = new
+        var dto = new
         {
-            userId = location.UserId,
+            userId,
             latitude = location.Latitude,
             longitude = location.Longitude,
             accuracy = location.Accuracy,
             updatedAt = location.UpdatedAt
         };
 
-        // ✅ Realtime: báo cho RESCUE/ADMIN
-        await _hub.Clients.Group("rescue").SendAsync("locationUpdated", payload);
+        // ✅ broadcast cho rescue/admin
+        await _hub.Clients.Group("rescue").SendAsync("locationUpdated", dto);
 
         return Ok(new LocationResponse
         {
@@ -69,8 +68,7 @@ public class LocationController : ControllerBase
     [HttpGet("me")]
     public async Task<IActionResult> GetMyLocation()
     {
-        if (!User.TryGetUserId(out var userId))
-            return Unauthorized("Missing/invalid user id claim.");
+        var userId = User.GetUserId();
 
         var location = await _db.Locations.FirstOrDefaultAsync(x => x.UserId == userId);
         if (location == null) return NotFound("Location not found");

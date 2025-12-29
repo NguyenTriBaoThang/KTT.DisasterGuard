@@ -1,26 +1,40 @@
-import { MapContainer, TileLayer, Marker, Popup, Circle, GeoJSON, useMap } from "react-leaflet";
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  Circle,
+  GeoJSON,
+  Polyline,
+  useMap,
+} from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/api";
 import MapLegend from "./MapLegend";
 import DisasterTestPanel from "./DisasterTestPanel";
 import { getRoleFromToken, getUserIdFromToken } from "../auth/auth";
 import SosPanel from "./SosPanel";
-import { startRealtime, getRealtimeConnection, stopRealtime } from "../realtime/realtime";
+import { distanceMeters } from "../utils/geoRisk";
+import { estimateEtaMinutes, formatKm } from "../utils/mockRoute";
 
-const userIcon = new L.Icon({
-  iconUrl: "https://cdn-icons-png.flaticon.com/512/149/149071.png",
-  iconSize: [28, 28],
-});
-
-const sosIcon = new L.Icon({
-  iconUrl: "https://cdn-icons-png.flaticon.com/512/564/564619.png",
-  iconSize: [32, 32],
-});
+import {
+  analyzeRisk,
+  buildSafetyAdvice,
+  severityColor,
+  Disaster as DisasterType,
+} from "../utils/geoRisk";
+import { createPinIcon } from "../utils/markerIcons";
+import {
+  buildMockRoute,
+  routeDistanceMeters,
+  LatLng,
+} from "../utils/mockRoute";
+import RoutePanel from "./RoutePanel";
 
 type Location = {
-  userId?: string;
+  userId?: string; // ✅ thêm để biết vị trí của rescuer
   latitude: number;
   longitude: number;
   updatedAt: string;
@@ -34,7 +48,7 @@ type Sos = {
   latitude: number;
   longitude: number;
 
-  status: string;
+  status: string; // PENDING | ACCEPTED | RESCUED | CANCELLED
   createdAt: string;
 
   updatedAt?: string;
@@ -43,38 +57,30 @@ type Sos = {
   cancelledAt?: string | null;
 };
 
-type Disaster = {
-  id: string;
-  type: string;
-  severity: string;
-  centerLat: number;
-  centerLng: number;
-  radiusMeters: number;
-  polygonGeoJson?: string | null;
-  createdAt: string;
-  isActive: boolean;
-};
-
-function severityColor(sev: string) {
-  const s = (sev || "").toUpperCase();
-  if (s === "CRITICAL") return "red";
-  if (s === "HIGH") return "orange";
-  if (s === "MEDIUM") return "gold";
-  return "green";
-}
+type Disaster = DisasterType;
 
 function shortGuid(g?: string | null) {
   if (!g) return "";
   return `${g.slice(0, 8)}...`;
 }
 
-// Component nhỏ để map flyTo khi chọn SOS
 function FlyTo({ position }: { position: [number, number] | null }) {
   const map = useMap();
   useEffect(() => {
     if (!position) return;
     map.flyTo(position, 16, { duration: 0.6 });
   }, [position, map]);
+  return null;
+}
+
+// Fit bounds theo route
+function FitRoute({ points }: { points: LatLng[] | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!points || points.length < 2) return;
+    const bounds = L.latLngBounds(points.map((p) => L.latLng(p[0], p[1])));
+    map.fitBounds(bounds, { padding: [40, 40] });
+  }, [points, map]);
   return null;
 }
 
@@ -88,104 +94,57 @@ export default function MapDashboard() {
   const [sosFilter, setSosFilter] = useState<string>("ACTIVE");
   const [selectedPos, setSelectedPos] = useState<[number, number] | null>(null);
 
+  // ✅ Route states
+  const [routePoints, setRoutePoints] = useState<LatLng[] | null>(null);
+  const [routeDistance, setRouteDistance] = useState(0);
+  const [routeMeta, setRouteMeta] = useState<{ from: string; to: string } | null>(null);
+  const [routeSosId, setRouteSosId] = useState<string | null>(null);
+
   const role = (getRoleFromToken() || "").toUpperCase();
   const myUserId = (getUserIdFromToken() || "").toLowerCase();
 
   const isRescueOrAdmin = role === "RESCUE" || role === "ADMIN";
   const isAdmin = role === "ADMIN";
 
-  const reloadTimer = useRef<any>(null);
+  const RESCUE_BASE: LatLng = [10.8231, 106.6297]; // mock base (HCM)
+
+  // ICONS
+  const icons = useMemo(() => {
+    const safeUser = createPinIcon("#2563eb", "U");
+    const safeSos = createPinIcon("#dc2626", "SOS");
+
+    const make = (sev: string, label: string) => createPinIcon(severityColor(sev), label);
+
+    return {
+      user: {
+        SAFE: safeUser,
+        LOW: make("LOW", "U"),
+        MEDIUM: make("MEDIUM", "U"),
+        HIGH: make("HIGH", "U"),
+        CRITICAL: make("CRITICAL", "U"),
+      },
+      sos: {
+        SAFE: safeSos,
+        LOW: make("LOW", "SOS"),
+        MEDIUM: make("MEDIUM", "SOS"),
+        HIGH: make("HIGH", "SOS"),
+        CRITICAL: make("CRITICAL", "SOS"),
+      },
+    };
+  }, []);
 
   useEffect(() => {
     loadData();
-
-    const timer = setInterval(loadData, 15000); // fallback
+    const timer = setInterval(loadData, 15000);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sosFilter]);
-
-  // ✅ SignalR realtime subscribe
-  useEffect(() => {
-    let mounted = true;
-
-    (async () => {
-      await startRealtime();
-      if (!mounted) return;
-
-      const conn = getRealtimeConnection();
-
-      const scheduleReload = () => {
-        if (reloadTimer.current) return;
-        reloadTimer.current = setTimeout(() => {
-          reloadTimer.current = null;
-          loadData();
-        }, 400);
-      };
-
-      // ✅ Locations: upsert để mượt
-      conn.on("locationUpdated", (p: any) => {
-        // p: { userId, latitude, longitude, accuracy, updatedAt }
-        const u = String(p?.userId || "");
-        if (!u) return;
-
-        setLocations((prev) => {
-          const idx = prev.findIndex((x) => String(x.userId || "").toLowerCase() === u.toLowerCase());
-          const next: Location = {
-            userId: u,
-            latitude: p.latitude,
-            longitude: p.longitude,
-            updatedAt: p.updatedAt,
-          };
-
-          if (idx >= 0) {
-            const copy = [...prev];
-            copy[idx] = { ...copy[idx], ...next };
-            return copy;
-          }
-          return [next, ...prev];
-        });
-      });
-
-      // ✅ SOS: do filter nhiều trạng thái -> debounced reload cho chắc 100%
-      conn.on("sosUpdated", () => {
-        scheduleReload();
-      });
-
-      // ✅ Disaster: update map
-      conn.on("disasterUpdated", (d: Disaster) => {
-        if (!d?.id) return;
-
-        setDisasters((prev) => {
-          if (!d.isActive) return prev.filter((x) => x.id !== d.id);
-
-          const idx = prev.findIndex((x) => x.id === d.id);
-          if (idx >= 0) {
-            const copy = [...prev];
-            copy[idx] = { ...copy[idx], ...d };
-            return copy;
-          }
-          return [d, ...prev];
-        });
-      });
-
-      conn.onreconnected(() => scheduleReload());
-      conn.onclose(() => scheduleReload());
-    })();
-
-    return () => {
-      mounted = false;
-      const conn = getRealtimeConnection();
-      conn.off("locationUpdated");
-      conn.off("sosUpdated");
-      conn.off("disasterUpdated");
-      stopRealtime().catch(() => {});
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sosFilter]);
 
   async function loadData() {
     const sosUrl =
-      sosFilter === "ACTIVE" ? "/api/sos" : `/api/sos?status=${encodeURIComponent(sosFilter)}`;
+      sosFilter === "ACTIVE"
+        ? "/api/sos"
+        : `/api/sos?status=${encodeURIComponent(sosFilter)}`;
 
     const results = await Promise.allSettled([
       api.get("/api/location/active"),
@@ -193,7 +152,6 @@ export default function MapDashboard() {
       api.get("/api/disaster/active"),
     ]);
 
-    // locations
     if (results[0].status === "fulfilled") {
       setLocations(results[0].value.data || []);
     } else {
@@ -202,7 +160,6 @@ export default function MapDashboard() {
       setLocations([]);
     }
 
-    // sos
     if (results[1].status === "fulfilled") {
       setSosList(results[1].value.data || []);
     } else {
@@ -211,7 +168,6 @@ export default function MapDashboard() {
       setSosList([]);
     }
 
-    // disasters
     if (results[2].status === "fulfilled") {
       setDisasters(results[2].value.data || []);
     } else {
@@ -219,17 +175,20 @@ export default function MapDashboard() {
     }
   }
 
-  async function acceptSos(id: string) {
+  async function acceptSos(id: string, silent = false): Promise<boolean> {
     setBusyId(id);
     try {
       await api.post(`/api/sos/${id}/accept`);
-      // realtime sẽ tự cập nhật, nhưng gọi reload nhẹ cho chắc
       await loadData();
-      alert("✅ Đã nhận SOS");
+      if (!silent) alert("✅ Đã nhận SOS");
+      return true;
     } catch (e: any) {
       const status = e?.response?.status;
-      if (status === 403) alert("❌ Không đủ quyền (cần RESCUE/ADMIN).");
-      else alert("❌ Không thể nhận SOS (có thể đã được người khác nhận).");
+      if (!silent) {
+        if (status === 403) alert("❌ Không đủ quyền (cần RESCUE/ADMIN).");
+        else alert("❌ Không thể nhận SOS (có thể đã được người khác nhận).");
+      }
+      return false;
     } finally {
       setBusyId(null);
     }
@@ -253,8 +212,9 @@ export default function MapDashboard() {
     }
   }
 
+  // GeoJSON layers
   const geoJsonLayers = useMemo(() => {
-    return disasters
+    return (disasters || [])
       .filter((d) => d.polygonGeoJson)
       .map((d) => {
         try {
@@ -266,30 +226,169 @@ export default function MapDashboard() {
       .filter(Boolean) as { d: Disaster; geo: any }[];
   }, [disasters]);
 
+  // Risk precompute
+  const locationWithRisk = useMemo(() => {
+    return (locations || []).map((l) => {
+      const r = analyzeRisk(l.latitude, l.longitude, disasters || []);
+      return { l, r };
+    });
+  }, [locations, disasters]);
+
+  const sosWithRisk = useMemo(() => {
+    return (sosList || []).map((s) => {
+      const r = analyzeRisk(s.latitude, s.longitude, disasters || []);
+      return { s, r };
+    });
+  }, [sosList, disasters]);
+
+  // ✅ tìm vị trí của rescuer (chính bạn)
+  const myRescuerPos: LatLng = useMemo(() => {
+    const me = (locations || []).find((x) => (x.userId || "").toLowerCase() === myUserId);
+    if (me) return [me.latitude, me.longitude];
+    return RESCUE_BASE;
+  }, [locations, myUserId]);
+
+  const nearestPending = useMemo(() => {
+    if (!isRescueOrAdmin) return null;
+
+    const pending = (sosList || []).filter(s => (s.status || "").toUpperCase() === "PENDING");
+    if (pending.length === 0) return null;
+
+    let best = pending[0];
+    let bestDist = Infinity;
+
+    for (const s of pending) {
+      const d = distanceMeters(myRescuerPos[0], myRescuerPos[1], s.latitude, s.longitude);
+      if (d < bestDist) {
+        bestDist = d;
+        best = s;
+      }
+    }
+
+    return { sos: best, distMeters: bestDist, etaMin: estimateEtaMinutes(bestDist) };
+  }, [sosList, myRescuerPos, isRescueOrAdmin]);
+
+  const nearestPendingId = nearestPending?.sos?.id ?? null;
+  const nearestPendingInfo = nearestPending
+    ? `${formatKm(nearestPending.distMeters)} • ~${nearestPending.etaMin} phút`
+    : "";
+
+  function clearRoute() {
+    setRoutePoints(null);
+    setRouteDistance(0);
+    setRouteMeta(null);
+    setRouteSosId(null);
+  }
+
+  // ✅ gợi ý route tới SOS
+  function routeTo(lat: number, lng: number, sosId?: string) {
+    const start = myRescuerPos;
+    const end: LatLng = [lat, lng];
+
+    const pts = buildMockRoute(start, end, 26, 0.0022);
+    const dist = routeDistanceMeters(pts);
+
+    setRoutePoints(pts);
+    setRouteDistance(dist);
+    setRouteMeta({
+      from: start === RESCUE_BASE ? "Rescue Base (mock)" : "My location (rescuer)",
+      to: sosId ? `SOS ${sosId.slice(0, 8)}...` : "SOS",
+    });
+    setRouteSosId(sosId || null);
+
+    // auto zoom
+    setSelectedPos([lat, lng]);
+  }
+
+  async function acceptAndRoute(id: string, lat: number, lng: number) {
+    const ok = await acceptSos(id, true);
+    if (!ok) {
+      // nếu fail -> reload & thử lại nearest mới
+      await loadData();
+      return;
+    }
+    routeTo(lat, lng, id);
+    alert("⚡ Đã nhận & gợi ý tuyến đường");
+  }
+
+  async function acceptAndRouteNearest() {
+    if (!nearestPending) {
+      alert("Không có SOS PENDING.");
+      return;
+    }
+    const s = nearestPending.sos;
+    await acceptAndRoute(s.id, s.latitude, s.longitude);
+  }
+
+  // ✅ Auto-route: nếu có SOS ACCEPTED thuộc bạn, tự vẽ route
+  useEffect(() => {
+    if (!isRescueOrAdmin) return;
+
+    const myAccepted = (sosList || []).find((s) => {
+      const st = (s.status || "").toUpperCase();
+      const rid = (s.rescuerId || "").toLowerCase();
+      return st === "ACCEPTED" && rid && rid === myUserId;
+    });
+
+    if (!myAccepted) return;
+
+    // tránh spam vẽ lại nếu đang vẽ đúng SOS đó
+    if (routeSosId && routeSosId === myAccepted.id) return;
+
+    routeTo(myAccepted.latitude, myAccepted.longitude, myAccepted.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sosList, myUserId, isRescueOrAdmin]);
+
   return (
     <>
-      <MapContainer center={[10.8231, 106.6297]} zoom={12} style={{ height: "100vh", width: "100%" }}>
+      <MapContainer
+        center={[10.8231, 106.6297]}
+        zoom={12}
+        style={{ height: "100vh", width: "100%" }}
+      >
         <TileLayer
           attribution="&copy; OpenStreetMap contributors"
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
-        {/* FlyTo khi chọn SOS */}
         <FlyTo position={selectedPos} />
 
+        {/* ✅ Route polyline */}
+        {routePoints && (
+          <>
+            <FitRoute points={routePoints} />
+            <Polyline
+              positions={routePoints}
+              pathOptions={{
+                color: "#E91E63",
+                weight: 5,
+                opacity: 0.9,
+              }}
+            />
+          </>
+        )}
+
         {/* DISASTER ZONES (Circle) */}
-        {disasters.map((d) => (
+        {(disasters || []).map((d) => (
           <Circle
             key={d.id}
             center={[d.centerLat, d.centerLng]}
             radius={d.radiusMeters}
-            pathOptions={{ color: severityColor(d.severity), fillOpacity: 0.12 }}
+            pathOptions={{
+              color: severityColor(d.severity),
+              fillOpacity: 0.12,
+              weight: 2,
+            }}
           >
             <Popup>
-              🌪️ <b>Disaster Alert</b><br />
-              Type: {d.type}<br />
-              Severity: {d.severity}<br />
-              Radius: {d.radiusMeters}m<br />
+              🌪️ <b>Disaster Alert</b>
+              <br />
+              Type: {d.type}
+              <br />
+              Severity: <b>{(d.severity || "").toUpperCase()}</b>
+              <br />
+              Radius: {d.radiusMeters}m
+              <br />
               Time: {new Date(d.createdAt).toLocaleString()}
             </Popup>
           </Circle>
@@ -300,47 +399,168 @@ export default function MapDashboard() {
           <GeoJSON
             key={`${d.id}-geo`}
             data={geo}
-            style={{ color: severityColor(d.severity), weight: 2, fillOpacity: 0.1 }}
+            style={{
+              color: severityColor(d.severity),
+              weight: 2,
+              fillOpacity: 0.1,
+            }}
           />
         ))}
 
-        {/* USER LOCATIONS */}
-        {locations.map((l, i) => (
-          <Marker key={`loc-${l.userId ?? i}`} position={[l.latitude, l.longitude]} icon={userIcon} zIndexOffset={1000}>
-            <Popup>
-              📍 <b>Người dùng</b><br />
-              Cập nhật: {new Date(l.updatedAt).toLocaleString()}
-            </Popup>
-          </Marker>
-        ))}
+        {/* USER LOCATIONS + risk highlight */}
+        {locationWithRisk.map(({ l, r }, i) => {
+          const inRisk = r.inRisk;
+          const sev = (r.topSeverity || "LOW").toUpperCase();
+          const color = severityColor(sev);
 
-        {/* SOS markers */}
-        {sosList.map((s, i) => {
+          const icon = inRisk
+            ? (icons.user as any)[sev] || icons.user.MEDIUM
+            : icons.user.SAFE;
+
+          return (
+            <div key={`loc-${i}`}>
+              <Marker
+                position={[l.latitude, l.longitude]}
+                icon={icon}
+                zIndexOffset={1000}
+              >
+                <Popup>
+                  📍 <b>Người dùng</b>
+                  <br />
+                  Cập nhật: {new Date(l.updatedAt).toLocaleString()}
+                  <br />
+                  {l.userId && (
+                    <>
+                      UserId: {shortGuid(l.userId)}
+                      <br />
+                    </>
+                  )}
+
+                  {inRisk ? (
+                    <>
+                      <hr />
+                      ⚠ <b style={{ color }}>Inside zone</b>
+                      <br />
+                      Severity: <b>{sev}</b>
+                      <br />
+                      Hits: {r.hits.length}
+                      <br />
+                      {buildSafetyAdvice(r.hits[0]?.type, sev)}
+                    </>
+                  ) : (
+                    <>
+                      <hr />
+                      ✅ <b>Outside zone</b>
+                    </>
+                  )}
+                </Popup>
+              </Marker>
+
+              {inRisk && (
+                <Circle
+                  center={[l.latitude, l.longitude]}
+                  radius={120}
+                  pathOptions={{
+                    color,
+                    fillOpacity: 0.06,
+                    weight: 2,
+                    dashArray: "6 6",
+                  }}
+                />
+              )}
+            </div>
+          );
+        })}
+
+        {/* SOS markers + risk highlight + route button */}
+        {sosWithRisk.map(({ s, r }) => {
           const st = (s.status || "").toUpperCase();
-          const id = s.id || `idx-${i}`;
+          const id = s.id;
+
           const rescuerId = (s.rescuerId || "").toLowerCase();
           const assignedToMe = !!myUserId && !!rescuerId && rescuerId === myUserId;
 
+          const inRisk = r.inRisk;
+          const sev = (r.topSeverity || "LOW").toUpperCase();
+          const color = severityColor(sev);
+
+          const icon = inRisk
+            ? (icons.sos as any)[sev] || icons.sos.HIGH
+            : icons.sos.SAFE;
+
           return (
             <div key={`sos-${id}`}>
-              <Marker position={[s.latitude, s.longitude]} icon={sosIcon} zIndexOffset={2000}>
+              <Marker
+                position={[s.latitude, s.longitude]}
+                icon={icon}
+                zIndexOffset={2000}
+              >
                 <Popup>
-                  🚨 <b>SOS</b><br />
-                  Status: <b>{st}</b><br />
-                  Time: {new Date(s.createdAt).toLocaleString()}<br />
+                  🚨 <b>SOS</b>
+                  <br />
+                  Status: <b>{st}</b>
+                  <br />
+                  Time: {new Date(s.createdAt).toLocaleString()}
+                  <br />
+
                   {s.rescuerId ? (
-                    <>Rescuer: {assignedToMe ? <b>YOU</b> : shortGuid(s.rescuerId)}<br /></>
+                    <>
+                      Rescuer: {assignedToMe ? <b>YOU</b> : shortGuid(s.rescuerId)}
+                      <br />
+                    </>
                   ) : (
-                    <>Rescuer: <i>Chưa nhận</i><br /></>
+                    <>
+                      Rescuer: <i>Chưa nhận</i>
+                      <br />
+                    </>
+                  )}
+
+                  {inRisk ? (
+                    <>
+                      <hr />
+                      ⚠ <b style={{ color }}>Inside zone</b>
+                      <br />
+                      Severity: <b>{sev}</b>
+                      <br />
+                      Hits: {r.hits.length}
+                      <br />
+                      {buildSafetyAdvice(r.hits[0]?.type, sev)}
+                    </>
+                  ) : (
+                    <>
+                      <hr />
+                      ✅ <b>Outside zone</b>
+                    </>
                   )}
 
                   {/* ACTIONS */}
                   {isRescueOrAdmin ? (
                     <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        style={{ ...btnStyle, border: "1px solid rgba(233,30,99,0.35)" }}
+                        onClick={() => routeTo(s.latitude, s.longitude, s.id)}
+                      >
+                        🧭 Route
+                      </button>
+
                       {st === "PENDING" && (
-                        <button style={btnStyle} disabled={busyId === id} onClick={() => acceptSos(id)}>
-                          {busyId === id ? "..." : "✅ Nhận SOS"}
-                        </button>
+                        <>
+                          <button
+                            style={{ ...btnStyle, background: "#E91E63", color: "white", border: "none" }}
+                            disabled={busyId === id}
+                            onClick={() => acceptAndRoute(id, s.latitude, s.longitude)}
+                          >
+                            {busyId === id ? "..." : "⚡ Nhận & Route"}
+                          </button>
+
+                          <button
+                            style={btnStyle}
+                            disabled={busyId === id}
+                            onClick={() => acceptSos(id)}
+                          >
+                            {busyId === id ? "..." : "✅ Nhận SOS"}
+                          </button>
+                        </>
                       )}
 
                       {st === "ACCEPTED" && (assignedToMe || isAdmin) && (
@@ -371,7 +591,21 @@ export default function MapDashboard() {
                 </Popup>
               </Marker>
 
-              <Circle center={[s.latitude, s.longitude]} radius={300} pathOptions={{ color: "red", fillOpacity: 0.2 }} />
+              {/* vòng ưu tiên cứu hộ */}
+              <Circle
+                center={[s.latitude, s.longitude]}
+                radius={300}
+                pathOptions={{ color: "#dc2626", fillOpacity: 0.2, weight: 2 }}
+              />
+
+              {/* highlight risk ring */}
+              {inRisk && (
+                <Circle
+                  center={[s.latitude, s.longitude]}
+                  radius={420}
+                  pathOptions={{ color, fillOpacity: 0.05, weight: 2, dashArray: "6 6" }}
+                />
+              )}
             </div>
           );
         })}
@@ -385,7 +619,7 @@ export default function MapDashboard() {
 
       <MapLegend />
 
-      {/* Panel điều phối SOS */}
+      {/* ✅ Panel điều phối SOS */}
       <SosPanel
         role={role || "USER"}
         myUserId={myUserId}
@@ -394,9 +628,23 @@ export default function MapDashboard() {
         filter={sosFilter}
         setFilter={(f) => setSosFilter(f)}
         busyId={busyId}
+        nearestPendingId={nearestPendingId}
+        nearestPendingInfo={nearestPendingInfo}
         onSelect={(id, lat, lng) => setSelectedPos([lat, lng])}
-        onAccept={acceptSos}
+        onRoute={(id, lat, lng) => routeTo(lat, lng, id)}
+        onAccept={(id) => acceptSos(id)}
+        onAcceptAndRouteNearest={acceptAndRouteNearest}
+        onAcceptAndRoute={(id, lat, lng) => acceptAndRoute(id, lat, lng)}
         onUpdateStatus={updateSosStatus}
+      />
+
+      {/* ✅ Route Info Panel */}
+      <RoutePanel
+        open={!!routePoints && !!routeMeta}
+        fromLabel={routeMeta?.from || ""}
+        toLabel={routeMeta?.to || ""}
+        distanceMeters={routeDistance}
+        onClear={clearRoute}
       />
 
       {/* Panel mock disaster chỉ hiện khi có quyền */}

@@ -46,10 +46,24 @@ public class SosController : ControllerBase
         _db.SosRequests.Add(sos);
         await _db.SaveChangesAsync();
 
+        var dto = new
+        {
+            id = sos.Id,
+            userId = sos.UserId,
+            rescuerId = (Guid?)null,
+            latitude = sos.Latitude,
+            longitude = sos.Longitude,
+            status = sos.Status,
+            createdAt = sos.CreatedAt
+        };
+
         var payload = ToDetail(sos);
 
-        // ✅ Realtime: báo cho RESCUE/ADMIN
-        await _hub.Clients.Group("rescue").SendAsync("sosUpdated", payload);
+        // ✅ broadcast cho RESCUE/ADMIN
+        await _hub.Clients.Group("rescue").SendAsync("sosChanged", new { action = "CREATED", sos = dto });
+
+        // ✅ gửi riêng cho user
+        await _hub.Clients.Group($"user:{userId}").SendAsync("mySosChanged", new { action = "CREATED", sos = dto });
 
         return Ok(new SosResponse
         {
