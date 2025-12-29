@@ -21,7 +21,7 @@ public class SosRequest
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
-    // ✅ tracking
+    // ✅ timestamps theo luồng điều phối
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? AcceptedAt { get; set; }
     public DateTime? RescuedAt { get; set; }

@@ -5,6 +5,7 @@ import AuthPage from "./pages/AuthPage";
 import DashboardPage from "./pages/DashboardPage";
 import UserSosPage from "./pages/UserSosPage";
 import ChatbotPage from "./pages/ChatbotPage";
+import ReportsPage from "./pages/ReportsPage";
 import { getToken } from "./auth/auth";
 import { setAuthToken } from "./api/api";
 import RequireRole from "./auth/RequireRole";
@@ -54,13 +55,22 @@ export default function App() {
           }
         />
 
-        {/* ✅ Chatbot */}
         <Route
           path="/chat"
           element={
             <RequireAuth>
               <ChatbotPage />
             </RequireAuth>
+          }
+        />
+
+        {/* ✅ Reports (RESCUE/ADMIN) */}
+        <Route
+          path="/reports"
+          element={
+            <RequireRole roles={["ADMIN", "RESCUE"]}>
+              <ReportsPage />
+            </RequireRole>
           }
         />
 

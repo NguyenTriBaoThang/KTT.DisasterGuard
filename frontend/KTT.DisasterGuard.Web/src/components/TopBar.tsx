@@ -5,6 +5,7 @@ import { clearAuthToken } from "../api/api";
 export default function TopBar() {
   const navigate = useNavigate();
   const role = (getRoleFromToken() || "GUEST").toUpperCase();
+  const isRescueOrAdmin = role === "RESCUE" || role === "ADMIN";
 
   function logout() {
     clearToken();
@@ -23,9 +24,17 @@ export default function TopBar() {
         <button style={styles.btn} onClick={() => navigate("/chat")}>
           🤖 Chatbot
         </button>
+
+        {isRescueOrAdmin && (
+          <button style={styles.btn} onClick={() => navigate("/reports")}>
+            📊 Reports
+          </button>
+        )}
+
         <button style={styles.btn} onClick={() => navigate("/")}>
           ⬅ Trang chủ
         </button>
+
         <button style={{ ...styles.btn, ...styles.logout }} onClick={logout}>
           Đăng xuất
         </button>
