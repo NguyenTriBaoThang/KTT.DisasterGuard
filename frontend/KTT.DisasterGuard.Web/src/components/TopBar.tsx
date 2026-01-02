@@ -23,6 +23,10 @@ export default function TopBar() {
       </div>
 
       <div style={styles.right}>
+        <button style={styles.btn} onClick={() => navigate("/windy")}>
+          🌀 Windy
+        </button>
+
         <button style={styles.btn} onClick={() => navigate("/chat")}>
           🤖 Chatbot
         </button>

@@ -6,6 +6,8 @@ import DashboardPage from "./pages/DashboardPage";
 import UserSosPage from "./pages/UserSosPage";
 import ChatbotPage from "./pages/ChatbotPage";
 import ReportsPage from "./pages/ReportsPage";
+import WindyPage from "./pages/WindyPage";
+
 import { getToken } from "./auth/auth";
 import { setAuthToken } from "./api/api";
 import RequireRole from "./auth/RequireRole";
@@ -37,6 +39,7 @@ export default function App() {
           element={<AuthPage onAuthed={() => (window.location.href = "/dashboard")} />}
         />
 
+        {/* ✅ Dashboard (RESCUE/ADMIN) */}
         <Route
           path="/dashboard"
           element={
@@ -46,6 +49,7 @@ export default function App() {
           }
         />
 
+        {/* ✅ SOS (USER cũng được) */}
         <Route
           path="/sos"
           element={
@@ -55,6 +59,7 @@ export default function App() {
           }
         />
 
+        {/* ✅ Chatbot */}
         <Route
           path="/chat"
           element={
@@ -71,6 +76,16 @@ export default function App() {
             <RequireRole roles={["ADMIN", "RESCUE"]}>
               <ReportsPage />
             </RequireRole>
+          }
+        />
+
+        {/* ✅ Windy (ai đăng nhập cũng xem được) */}
+        <Route
+          path="/windy"
+          element={
+            <RequireAuth>
+              <WindyPage />
+            </RequireAuth>
           }
         />
 

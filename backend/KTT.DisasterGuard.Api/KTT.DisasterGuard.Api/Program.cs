@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using KTT.DisasterGuard.Api.Services.Cyclone;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -119,6 +120,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 
 builder.Services.AddAuthorization();
+
+builder.Services.AddHttpClient<ICycloneTrackService, JmaBosaiCycloneTrackService>();
 
 var app = builder.Build();
 
