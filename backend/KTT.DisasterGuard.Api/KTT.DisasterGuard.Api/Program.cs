@@ -4,21 +4,21 @@ using KTT.DisasterGuard.Api.Data;
 using KTT.DisasterGuard.Api.Hubs;
 using KTT.DisasterGuard.Api.Models;
 using KTT.DisasterGuard.Api.Services;
+using KTT.DisasterGuard.Api.Services.Cyclone;
+using KTT.DisasterGuard.Api.Services.Atcf; // ✅ ATCF (JTWC/NHC) a/b-deck
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
-using KTT.DisasterGuard.Api.Services.Cyclone;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// =======================
+// Controllers + Swagger
+// =======================
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
-// ✅ SignalR
-builder.Services.AddSignalR();
-
-// ✅ Swagger + Bearer
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "DisasterGuard API", Version = "v1" });
@@ -49,7 +49,14 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-// ✅ CORS (SignalR cần AllowCredentials khi dùng negotiate/WebSocket cross-origin)
+// =======================
+// SignalR
+// =======================
+builder.Services.AddSignalR();
+
+// =======================
+// CORS (Vite + SignalR)
+// =======================
 const string CorsPolicy = "AllowVite";
 builder.Services.AddCors(options =>
 {
@@ -64,17 +71,22 @@ builder.Services.AddCors(options =>
             )
             .AllowAnyHeader()
             .AllowAnyMethod()
+            // SignalR cross-origin (negotiate/websocket) -> cần credentials
             .AllowCredentials();
     });
 });
 
-// ✅ DB
+// =======================
+// DB
+// =======================
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
     options.UseSqlServer(builder.Configuration.GetConnectionString("Default"));
 });
 
-// ✅ JWT service
+// =======================
+// JWT Auth
+// =======================
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 
 var jwtKey = builder.Configuration["Jwt:Key"]!;
@@ -101,7 +113,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             RoleClaimType = ClaimTypes.Role
         };
 
-        // ✅ Cho SignalR: lấy token từ query ?access_token=... khi connect hub
+        // ✅ SignalR: lấy token từ query ?access_token=... khi connect hub
         options.Events = new JwtBearerEvents
         {
             OnMessageReceived = context =>
@@ -109,7 +121,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 var accessToken = context.Request.Query["access_token"];
                 var path = context.HttpContext.Request.Path;
 
-                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs/realtime"))
+                if (!string.IsNullOrEmpty(accessToken) &&
+                    path.StartsWithSegments("/hubs/realtime"))
                 {
                     context.Token = accessToken;
                 }
@@ -121,11 +134,35 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 builder.Services.AddAuthorization();
 
+// =======================
+// Cyclone Sources
+// =======================
+
+// ✅ (A) JMA Bosai Cyclone Track (real data)
 builder.Services.AddHttpClient<ICycloneTrackService, JmaBosaiCycloneTrackService>();
 
+// ✅ Typed HttpClient for JMA Bosai
+builder.Services.AddHttpClient<JmaTyphoonService>(client =>
+{
+    client.BaseAddress = new Uri("https://www.jma.go.jp/bosai/");
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("KTT.DisasterGuard/1.0");
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+});
+
+// ✅ (B) ATCF JTWC/NHC a-deck / b-deck
+// (Bạn cần có AtcfOptions + IAtcfService/AtcfService theo code mình gửi)
+builder.Services.AddMemoryCache();
+builder.Services.Configure<AtcfOptions>(builder.Configuration.GetSection("Atcf"));
+builder.Services.AddHttpClient<IAtcfService, AtcfService>();
+
+// =======================
+// Build App
+// =======================
 var app = builder.Build();
 
-// ✅ Auto migrate + seed users (Development)
+// =======================
+// Dev: migrate + seed
+// =======================
 if (app.Environment.IsDevelopment())
 {
     using var scope = app.Services.CreateScope();
@@ -158,6 +195,9 @@ if (app.Environment.IsDevelopment())
     await EnsureUser(rescueEmail, rescuePass, "RESCUE", "KTT Rescue");
 }
 
+// =======================
+// Middlewares
+// =======================
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
@@ -172,9 +212,13 @@ app.UseCors(CorsPolicy);
 app.UseAuthentication();
 app.UseAuthorization();
 
+// =======================
+// Map endpoints
+// =======================
 app.MapControllers();
 
-// ✅ Map SignalR Hub (Realtime)
-app.MapHub<RealtimeHub>("/hubs/realtime").RequireCors(CorsPolicy);
+// ✅ SignalR Hub
+app.MapHub<RealtimeHub>("/hubs/realtime")
+   .RequireCors(CorsPolicy);
 
 app.Run();

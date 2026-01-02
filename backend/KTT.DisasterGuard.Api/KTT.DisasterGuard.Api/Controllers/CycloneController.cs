@@ -1,32 +1,54 @@
-﻿using KTT.DisasterGuard.Api.Services.Cyclone;
+﻿using KTT.DisasterGuard.Api.Services.Atcf;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace KTT.DisasterGuard.Api.Controllers;
 
 [ApiController]
 [Route("api/cyclone")]
-public class CycloneController : ControllerBase
+public sealed class CycloneController : ControllerBase
 {
-    private readonly ICycloneTrackService _svc;
+    private readonly IAtcfService _atcf;
 
-    public CycloneController(ICycloneTrackService svc)
+    public CycloneController(IAtcfService atcf)
     {
-        _svc = svc;
+        _atcf = atcf;
     }
 
-    // ✅ GeoJSON: storm center (Point) + track (LineString)
+    // ✅ Trả GeoJSON nhiều storm (merge)
+    // VD: /api/cyclone/active?source=jtwc&aid=JTWC&eventIds=WP012026,WP022026
     [HttpGet("active")]
-    public async Task<IActionResult> GetActive(CancellationToken ct)
+    [Authorize(Roles = "ADMIN,RESCUE")]
+    public async Task<ActionResult<GeoJsonFeatureCollection>> GetActive(
+        [FromQuery] string? source,
+        [FromQuery] string? aid,
+        [FromQuery] string? eventIds,
+        CancellationToken ct)
     {
-        var geo = await _svc.GetActiveCyclonesGeoJsonAsync(ct);
-        return Ok(geo);
+        var ids = ParseIds(eventIds);
+        var fc = await _atcf.GetActiveGeoJsonAsync(ids, source, aid, ct);
+        return Ok(fc);
     }
 
-    // ✅ debug: xem raw JMA list
-    [HttpGet("raw")]
-    public async Task<IActionResult> Raw(CancellationToken ct)
+    // ✅ Trả GeoJSON theo 1 eventId ATCF (WP012026)
+    [HttpGet("atcf/{eventId}")]
+    [Authorize(Roles = "ADMIN,RESCUE")]
+    public async Task<ActionResult<GeoJsonFeatureCollection>> GetByEventId(
+        [FromRoute] string eventId,
+        [FromQuery] string? source,
+        [FromQuery] string? aid,
+        CancellationToken ct)
     {
-        var raw = await _svc.GetRawActiveListAsync(ct);
-        return Content(raw, "application/json");
+        var fc = await _atcf.GetCycloneGeoJsonByEventIdAsync(eventId, source, aid, ct);
+        return Ok(fc);
+    }
+
+    private static IEnumerable<string> ParseIds(string? eventIds)
+    {
+        if (string.IsNullOrWhiteSpace(eventIds)) return Array.Empty<string>();
+
+        return eventIds
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(x => x.ToUpperInvariant());
     }
 }

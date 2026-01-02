@@ -1,3 +1,4 @@
+// src/components/MapDashboard.tsx
 import {
   MapContainer,
   TileLayer,
@@ -16,22 +17,25 @@ import MapLegend from "./MapLegend";
 import DisasterTestPanel from "./DisasterTestPanel";
 import { getRoleFromToken, getUserIdFromToken } from "../auth/auth";
 import SosPanel from "./SosPanel";
-import { distanceMeters } from "../utils/geoRisk";
-import { estimateEtaMinutes, formatKm } from "../utils/mockRoute";
+import RoutePanel from "./RoutePanel";
+import TyphoonLayer from "./TyphoonLayer";
 
 import {
   analyzeRisk,
   buildSafetyAdvice,
   severityColor,
   Disaster as DisasterType,
+  distanceMeters,
 } from "../utils/geoRisk";
+
 import { createPinIcon } from "../utils/markerIcons";
 import {
   buildMockRoute,
   routeDistanceMeters,
   LatLng,
+  estimateEtaMinutes,
+  formatKm,
 } from "../utils/mockRoute";
-import RoutePanel from "./RoutePanel";
 
 import {
   OverlayId,
@@ -50,10 +54,13 @@ type Sos = {
   id: string;
   userId: string;
   rescuerId?: string | null;
+
   latitude: number;
   longitude: number;
-  status: string;
+
+  status: string; // PENDING | ACCEPTED | RESCUED | CANCELLED
   createdAt: string;
+
   updatedAt?: string;
   acceptedAt?: string | null;
   rescuedAt?: string | null;
@@ -62,15 +69,11 @@ type Sos = {
 
 type Disaster = DisasterType;
 
-// ✅ Cyclone GeoJSON types
+// ✅ Cyclone/Typhoon GeoJSON from backend
 type GeoJsonFeatureCollection = {
   type: "FeatureCollection";
-  features: GeoJsonFeature[];
-};
-type GeoJsonFeature = {
-  type: "Feature";
-  geometry: { type: "Point" | "LineString"; coordinates: any };
-  properties?: Record<string, any>;
+  features: any[];
+  meta?: any;
 };
 
 function shortGuid(g?: string | null) {
@@ -87,6 +90,7 @@ function FlyTo({ position }: { position: [number, number] | null }) {
   return null;
 }
 
+// Fit bounds theo route
 function FitRoute({ points }: { points: LatLng[] | null }) {
   const map = useMap();
   useEffect(() => {
@@ -101,7 +105,9 @@ export default function MapDashboard() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [sosList, setSosList] = useState<Sos[]>([]);
   const [disasters, setDisasters] = useState<Disaster[]>([]);
-  const [cyclones, setCyclones] = useState<GeoJsonFeatureCollection | null>(null);
+  const [cyclones, setCyclones] = useState<GeoJsonFeatureCollection | null>(
+    null
+  );
 
   const [needRescueRole, setNeedRescueRole] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -109,14 +115,16 @@ export default function MapDashboard() {
   const [sosFilter, setSosFilter] = useState<string>("ACTIVE");
   const [selectedPos, setSelectedPos] = useState<[number, number] | null>(null);
 
-  // ✅ Overlay state (wind/rainAccu/pressure)
+  // ✅ Weather overlay (wind/rainAccu/pressure)
   const [overlay, setOverlay] = useState<OverlayId>("none");
   const owmKey = (import.meta as any).env?.VITE_OWM_KEY as string | undefined;
 
   // ✅ Route states
   const [routePoints, setRoutePoints] = useState<LatLng[] | null>(null);
   const [routeDistance, setRouteDistance] = useState(0);
-  const [routeMeta, setRouteMeta] = useState<{ from: string; to: string } | null>(null);
+  const [routeMeta, setRouteMeta] = useState<{ from: string; to: string } | null>(
+    null
+  );
   const [routeSosId, setRouteSosId] = useState<string | null>(null);
 
   const role = (getRoleFromToken() || "").toUpperCase();
@@ -127,10 +135,12 @@ export default function MapDashboard() {
 
   const RESCUE_BASE: LatLng = [10.8231, 106.6297];
 
+  // ICONS
   const icons = useMemo(() => {
     const safeUser = createPinIcon("#2563eb", "U");
     const safeSos = createPinIcon("#dc2626", "SOS");
-    const make = (sev: string, label: string) => createPinIcon(severityColor(sev), label);
+    const make = (sev: string, label: string) =>
+      createPinIcon(severityColor(sev), label);
 
     return {
       user: {
@@ -147,7 +157,6 @@ export default function MapDashboard() {
         HIGH: make("HIGH", "SOS"),
         CRITICAL: make("CRITICAL", "SOS"),
       },
-      cyclone: createPinIcon("#0ea5e9", "TC"),
     };
   }, []);
 
@@ -178,7 +187,7 @@ export default function MapDashboard() {
     }
 
     tick();
-    timer = setInterval(tick, 30000); // 30s/lần
+    timer = setInterval(tick, 30000);
     return () => clearInterval(timer);
   }, [isRescueOrAdmin]);
 
@@ -199,7 +208,10 @@ export default function MapDashboard() {
       api.get("/api/location/active"),
       api.get(sosUrl),
       api.get("/api/disaster/active"),
-      api.get("/api/cyclone/active"), // ✅ cyclone real data -> GeoJSON
+
+      // ✅ cyclone real data -> GeoJSON
+      // Nếu backend bạn đặt route khác (vd: /api/typhoon/active) thì đổi ở đây.
+      api.get("/api/cyclone/active"),
     ]);
 
     // locations
@@ -272,6 +284,7 @@ export default function MapDashboard() {
     }
   }
 
+  // GeoJSON layers cho Disaster polygon
   const geoJsonLayers = useMemo(() => {
     return (disasters || [])
       .filter((d) => d.polygonGeoJson)
@@ -300,8 +313,11 @@ export default function MapDashboard() {
     });
   }, [sosList, disasters]);
 
+  // vị trí rescuer
   const myRescuerPos: LatLng = useMemo(() => {
-    const me = (locations || []).find((x) => (x.userId || "").toLowerCase() === myUserId);
+    const me = (locations || []).find(
+      (x) => (x.userId || "").toLowerCase() === myUserId
+    );
     if (me) return [me.latitude, me.longitude];
     return RESCUE_BASE;
   }, [locations, myUserId]);
@@ -309,21 +325,32 @@ export default function MapDashboard() {
   const nearestPending = useMemo(() => {
     if (!isRescueOrAdmin) return null;
 
-    const pending = (sosList || []).filter((s) => (s.status || "").toUpperCase() === "PENDING");
+    const pending = (sosList || []).filter(
+      (s) => (s.status || "").toUpperCase() === "PENDING"
+    );
     if (pending.length === 0) return null;
 
     let best = pending[0];
     let bestDist = Infinity;
 
     for (const s of pending) {
-      const d = distanceMeters(myRescuerPos[0], myRescuerPos[1], s.latitude, s.longitude);
+      const d = distanceMeters(
+        myRescuerPos[0],
+        myRescuerPos[1],
+        s.latitude,
+        s.longitude
+      );
       if (d < bestDist) {
         bestDist = d;
         best = s;
       }
     }
 
-    return { sos: best, distMeters: bestDist, etaMin: estimateEtaMinutes(bestDist) };
+    return {
+      sos: best,
+      distMeters: bestDist,
+      etaMin: estimateEtaMinutes(bestDist),
+    };
   }, [sosList, myRescuerPos, isRescueOrAdmin]);
 
   const nearestPendingId = nearestPending?.sos?.id ?? null;
@@ -338,6 +365,7 @@ export default function MapDashboard() {
     setRouteSosId(null);
   }
 
+  // gợi ý route tới SOS
   function routeTo(lat: number, lng: number, sosId?: string) {
     const start = myRescuerPos;
     const end: LatLng = [lat, lng];
@@ -375,6 +403,7 @@ export default function MapDashboard() {
     await acceptAndRoute(s.id, s.latitude, s.longitude);
   }
 
+  // Auto-route: nếu có SOS ACCEPTED thuộc bạn, tự vẽ route
   useEffect(() => {
     if (!isRescueOrAdmin) return;
 
@@ -385,26 +414,20 @@ export default function MapDashboard() {
     });
 
     if (!myAccepted) return;
+
     if (routeSosId && routeSosId === myAccepted.id) return;
 
     routeTo(myAccepted.latitude, myAccepted.longitude, myAccepted.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sosList, myUserId, isRescueOrAdmin]);
 
-  // ✅ cyclone render helpers
-  const cyclonePoints = useMemo(() => {
-    const feats = cyclones?.features || [];
-    return feats.filter((f) => f.geometry?.type === "Point");
-  }, [cyclones]);
-
-  const cycloneLines = useMemo(() => {
-    const feats = cyclones?.features || [];
-    return feats.filter((f) => f.geometry?.type === "LineString");
-  }, [cyclones]);
-
   return (
     <>
-      <MapContainer center={[10.8231, 106.6297]} zoom={8} style={{ height: "100vh", width: "100%" }}>
+      <MapContainer
+        center={[10.8231, 106.6297]}
+        zoom={8}
+        style={{ height: "100vh", width: "100%" }}
+      >
         <TileLayer
           attribution="&copy; OpenStreetMap contributors"
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -432,92 +455,86 @@ export default function MapDashboard() {
           </>
         )}
 
-        {/* ✅ Cyclone forecast track (real data GeoJSON) */}
-        {cycloneLines.map((f, idx) => {
-          const coords = (f.geometry.coordinates || []) as number[][];
-          const latlngs = coords.map((c) => [c[1], c[0]] as [number, number]); // [lat,lng]
-          return (
-            <Polyline
-              key={`tc-line-${idx}`}
-              positions={latlngs}
-              pathOptions={{ color: "#0ea5e9", weight: 3, opacity: 0.9, dashArray: "6 6" }}
-            />
-          );
-        })}
+        {/* ✅ REAL cyclone/typhoon center + forecast track (GeoJSON from backend) */}
+        {cyclones && <TyphoonLayer data={cyclones as any} />}
 
-        {/* ✅ Cyclone centers */}
-        {cyclonePoints.map((f, idx) => {
-          const [lng, lat] = f.geometry.coordinates as number[];
-          const name = f.properties?.name || "Tropical Cyclone";
-          const time = f.properties?.time;
-          return (
-            <Marker
-              key={`tc-pt-${idx}`}
-              position={[lat, lng]}
-              icon={(icons as any).cyclone}
-              zIndexOffset={2500}
-            >
-              <Popup>
-                🌀 <b>{name}</b>
-                <br />
-                Source: {f.properties?.source || "JMA"}
-                <br />
-                {time ? (
-                  <>
-                    Time: {new Date(time).toLocaleString()}
-                    <br />
-                  </>
-                ) : null}
-                Lat/Lng: {lat.toFixed(3)}, {lng.toFixed(3)}
-              </Popup>
-            </Marker>
-          );
-        })}
-
-        {/* DISASTER ZONES */}
+        {/* DISASTER ZONES (Circle) */}
         {(disasters || []).map((d) => (
           <Circle
             key={d.id}
             center={[d.centerLat, d.centerLng]}
             radius={d.radiusMeters}
-            pathOptions={{ color: severityColor(d.severity), fillOpacity: 0.12, weight: 2 }}
+            pathOptions={{
+              color: severityColor(d.severity),
+              fillOpacity: 0.12,
+              weight: 2,
+            }}
           >
             <Popup>
-              🌪️ <b>Disaster Alert</b><br />
-              Type: {d.type}<br />
-              Severity: <b>{(d.severity || "").toUpperCase()}</b><br />
-              Radius: {d.radiusMeters}m<br />
+              🌪️ <b>Disaster Alert</b>
+              <br />
+              Type: {d.type}
+              <br />
+              Severity: <b>{(d.severity || "").toUpperCase()}</b>
+              <br />
+              Radius: {d.radiusMeters}m
+              <br />
               Time: {new Date(d.createdAt).toLocaleString()}
             </Popup>
           </Circle>
         ))}
 
+        {/* DISASTER ZONES (Polygon GeoJSON) */}
         {geoJsonLayers.map(({ d, geo }) => (
-          <GeoJSON key={`${d.id}-geo`} data={geo} style={{ color: severityColor(d.severity), weight: 2, fillOpacity: 0.1 }} />
+          <GeoJSON
+            key={`${d.id}-geo`}
+            data={geo}
+            style={{
+              color: severityColor(d.severity),
+              weight: 2,
+              fillOpacity: 0.1,
+            }}
+          />
         ))}
 
-        {/* USER LOCATIONS + risk */}
+        {/* USER LOCATIONS + risk highlight */}
         {locationWithRisk.map(({ l, r }, i) => {
           const inRisk = r.inRisk;
           const sev = (r.topSeverity || "LOW").toUpperCase();
           const color = severityColor(sev);
 
-          const icon = inRisk ? (icons.user as any)[sev] || icons.user.MEDIUM : icons.user.SAFE;
+          const icon = inRisk
+            ? (icons.user as any)[sev] || icons.user.MEDIUM
+            : icons.user.SAFE;
 
           return (
             <div key={`loc-${i}`}>
-              <Marker position={[l.latitude, l.longitude]} icon={icon} zIndexOffset={1000}>
+              <Marker
+                position={[l.latitude, l.longitude]}
+                icon={icon}
+                zIndexOffset={1000}
+              >
                 <Popup>
-                  📍 <b>Người dùng</b><br />
-                  Cập nhật: {new Date(l.updatedAt).toLocaleString()}<br />
-                  {l.userId ? <>UserId: {shortGuid(l.userId)}<br /></> : null}
+                  📍 <b>Người dùng</b>
+                  <br />
+                  Cập nhật: {new Date(l.updatedAt).toLocaleString()}
+                  <br />
+                  {l.userId ? (
+                    <>
+                      UserId: {shortGuid(l.userId)}
+                      <br />
+                    </>
+                  ) : null}
 
                   {inRisk ? (
                     <>
                       <hr />
-                      ⚠ <b style={{ color }}>Inside zone</b><br />
-                      Severity: <b>{sev}</b><br />
-                      Hits: {r.hits.length}<br />
+                      ⚠ <b style={{ color }}>Inside zone</b>
+                      <br />
+                      Severity: <b>{sev}</b>
+                      <br />
+                      Hits: {r.hits.length}
+                      <br />
                       {buildSafetyAdvice(r.hits[0]?.type, sev)}
                     </>
                   ) : (
@@ -530,8 +547,15 @@ export default function MapDashboard() {
               </Marker>
 
               {inRisk && (
-                <Circle center={[l.latitude, l.longitude]} radius={120}
-                  pathOptions={{ color, fillOpacity: 0.06, weight: 2, dashArray: "6 6" }}
+                <Circle
+                  center={[l.latitude, l.longitude]}
+                  radius={120}
+                  pathOptions={{
+                    color,
+                    fillOpacity: 0.06,
+                    weight: 2,
+                    dashArray: "6 6",
+                  }}
                 />
               )}
             </div>
@@ -544,31 +568,53 @@ export default function MapDashboard() {
           const id = s.id;
 
           const rescuerId = (s.rescuerId || "").toLowerCase();
-          const assignedToMe = !!myUserId && !!rescuerId && rescuerId === myUserId;
+          const assignedToMe =
+            !!myUserId && !!rescuerId && rescuerId === myUserId;
 
           const inRisk = r.inRisk;
           const sev = (r.topSeverity || "LOW").toUpperCase();
           const color = severityColor(sev);
 
-          const icon = inRisk ? (icons.sos as any)[sev] || icons.sos.HIGH : icons.sos.SAFE;
+          const icon = inRisk
+            ? (icons.sos as any)[sev] || icons.sos.HIGH
+            : icons.sos.SAFE;
 
           return (
             <div key={`sos-${id}`}>
-              <Marker position={[s.latitude, s.longitude]} icon={icon} zIndexOffset={2000}>
+              <Marker
+                position={[s.latitude, s.longitude]}
+                icon={icon}
+                zIndexOffset={2000}
+              >
                 <Popup>
-                  🚨 <b>SOS</b><br />
-                  Status: <b>{st}</b><br />
-                  Time: {new Date(s.createdAt).toLocaleString()}<br />
+                  🚨 <b>SOS</b>
+                  <br />
+                  Status: <b>{st}</b>
+                  <br />
+                  Time: {new Date(s.createdAt).toLocaleString()}
+                  <br />
 
                   {s.rescuerId ? (
-                    <>Rescuer: {assignedToMe ? <b>YOU</b> : shortGuid(s.rescuerId)}<br /></>
+                    <>
+                      Rescuer: {assignedToMe ? <b>YOU</b> : shortGuid(s.rescuerId)}
+                      <br />
+                    </>
                   ) : (
-                    <>Rescuer: <i>Chưa nhận</i><br /></>
+                    <>
+                      Rescuer: <i>Chưa nhận</i>
+                      <br />
+                    </>
                   )}
 
                   {/* ✅ Dropdown overlay ngay trong popup SOS */}
                   <div style={{ marginTop: 10 }}>
-                    <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        opacity: 0.8,
+                        marginBottom: 4,
+                      }}
+                    >
                       Weather overlay:
                     </div>
                     <select
@@ -588,7 +634,13 @@ export default function MapDashboard() {
                     </select>
 
                     {overlay !== "none" && !owmKey && (
-                      <div style={{ marginTop: 6, fontSize: 12, color: "#b91c1c" }}>
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontSize: 12,
+                          color: "#b91c1c",
+                        }}
+                      >
                         Thiếu <b>VITE_OWM_KEY</b> (.env) nên chưa load được overlay.
                       </div>
                     )}
@@ -597,9 +649,12 @@ export default function MapDashboard() {
                   {inRisk ? (
                     <>
                       <hr />
-                      ⚠ <b style={{ color }}>Inside zone</b><br />
-                      Severity: <b>{sev}</b><br />
-                      Hits: {r.hits.length}<br />
+                      ⚠ <b style={{ color }}>Inside zone</b>
+                      <br />
+                      Severity: <b>{sev}</b>
+                      <br />
+                      Hits: {r.hits.length}
+                      <br />
                       {buildSafetyAdvice(r.hits[0]?.type, sev)}
                     </>
                   ) : (
@@ -609,10 +664,21 @@ export default function MapDashboard() {
                     </>
                   )}
 
+                  {/* ACTIONS */}
                   {isRescueOrAdmin ? (
-                    <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <div
+                      style={{
+                        marginTop: 10,
+                        display: "flex",
+                        gap: 8,
+                        flexWrap: "wrap",
+                      }}
+                    >
                       <button
-                        style={{ ...btnStyle, border: "1px solid rgba(233,30,99,0.35)" }}
+                        style={{
+                          ...btnStyle,
+                          border: "1px solid rgba(233,30,99,0.35)",
+                        }}
                         onClick={() => routeTo(s.latitude, s.longitude, s.id)}
                       >
                         🧭 Route
@@ -621,14 +687,25 @@ export default function MapDashboard() {
                       {st === "PENDING" && (
                         <>
                           <button
-                            style={{ ...btnStyle, background: "#E91E63", color: "white", border: "none" }}
+                            style={{
+                              ...btnStyle,
+                              background: "#E91E63",
+                              color: "white",
+                              border: "none",
+                            }}
                             disabled={busyId === id}
-                            onClick={() => acceptAndRoute(id, s.latitude, s.longitude)}
+                            onClick={() =>
+                              acceptAndRoute(id, s.latitude, s.longitude)
+                            }
                           >
                             {busyId === id ? "..." : "⚡ Nhận & Route"}
                           </button>
 
-                          <button style={btnStyle} disabled={busyId === id} onClick={() => acceptSos(id)}>
+                          <button
+                            style={btnStyle}
+                            disabled={busyId === id}
+                            onClick={() => acceptSos(id)}
+                          >
                             {busyId === id ? "..." : "✅ Nhận SOS"}
                           </button>
                         </>
@@ -637,7 +714,12 @@ export default function MapDashboard() {
                       {st === "ACCEPTED" && (assignedToMe || isAdmin) && (
                         <>
                           <button
-                            style={{ ...btnStyle, background: "#16a34a", color: "white", border: "none" }}
+                            style={{
+                              ...btnStyle,
+                              background: "#16a34a",
+                              color: "white",
+                              border: "none",
+                            }}
                             disabled={busyId === id}
                             onClick={() => updateSosStatus(id, "RESCUED")}
                           >
@@ -645,7 +727,12 @@ export default function MapDashboard() {
                           </button>
 
                           <button
-                            style={{ ...btnStyle, background: "#dc2626", color: "white", border: "none" }}
+                            style={{
+                              ...btnStyle,
+                              background: "#dc2626",
+                              color: "white",
+                              border: "none",
+                            }}
                             disabled={busyId === id}
                             onClick={() => updateSosStatus(id, "CANCELLED")}
                           >
@@ -662,13 +749,28 @@ export default function MapDashboard() {
                 </Popup>
               </Marker>
 
-              <Circle center={[s.latitude, s.longitude]} radius={300}
-                pathOptions={{ color: "#dc2626", fillOpacity: 0.2, weight: 2 }}
+              {/* vòng ưu tiên cứu hộ */}
+              <Circle
+                center={[s.latitude, s.longitude]}
+                radius={300}
+                pathOptions={{
+                  color: "#dc2626",
+                  fillOpacity: 0.2,
+                  weight: 2,
+                }}
               />
 
+              {/* highlight risk ring */}
               {inRisk && (
-                <Circle center={[s.latitude, s.longitude]} radius={420}
-                  pathOptions={{ color, fillOpacity: 0.05, weight: 2, dashArray: "6 6" }}
+                <Circle
+                  center={[s.latitude, s.longitude]}
+                  radius={420}
+                  pathOptions={{
+                    color,
+                    fillOpacity: 0.05,
+                    weight: 2,
+                    dashArray: "6 6",
+                  }}
                 />
               )}
             </div>
@@ -682,10 +784,10 @@ export default function MapDashboard() {
         </div>
       )}
 
-      {/* ✅ Nếu cyclone API trả rỗng (không có bão thật) */}
+      {/* ✅ nếu cyclone API trả rỗng (không có bão thật lúc đó) */}
       {cyclones && (cyclones.features?.length ?? 0) === 0 && (
         <div style={{ ...hintStyle, top: 110 }}>
-          🌀 Hiện tại nguồn dữ liệu cyclone trả về <b>0</b> bão hoạt động (dữ liệu thật).
+          🌀 Hiện tại nguồn cyclone trả về <b>0</b> bão hoạt động (dữ liệu thật).
         </div>
       )}
 
